@@ -39,5 +39,5 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
     implementation("androidx.savedstate:savedstate-ktx:1.2.1")
 
-    implementation("io.github.kyant0:backdrop:2.0.1")
+    implementation("io.github.kyant0:backdrop:1.0.6")
 }
