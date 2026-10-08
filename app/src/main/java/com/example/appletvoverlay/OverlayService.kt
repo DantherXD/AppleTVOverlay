@@ -6,45 +6,61 @@ import android.app.NotificationManager
 import android.app.Service
 import android.content.Intent
 import android.graphics.Color
-import android.graphics.Typeface
-import android.graphics.drawable.GradientDrawable
-import android.graphics.drawable.LayerDrawable
 import android.media.AudioManager
 import android.os.Build
 import android.os.IBinder
 import android.provider.Settings
-import android.util.TypedValue
 import android.view.Gravity
 import android.view.KeyEvent
 import android.view.View
-import android.view.ViewGroup
 import android.view.WindowManager
-import android.widget.FrameLayout
-import android.widget.LinearLayout
-import android.widget.TextView
+import androidx.compose.foundation.background
+import androidx.compose.foundation.focusable
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Text
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.graphics.Color as ComposeColor
+import androidx.compose.ui.input.key.*
+import androidx.compose.ui.platform.ComposeView
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.core.app.NotificationCompat
+import androidx.lifecycle.setViewTreeLifecycleOwner
+import androidx.lifecycle.setViewTreeViewModelStoreOwner
+import androidx.savedstate.setViewTreeSavedStateRegistryOwner
+import com.kyant.backdrop.Backdrop
+import com.kyant.backdrop.backdrops.layerBackdrop
+import com.kyant.backdrop.backdrops.rememberLayerBackdrop
+import com.kyant.backdrop.drawBackdrop
+import com.kyant.backdrop.effects.blur
+import com.kyant.backdrop.effects.lens
+import com.kyant.backdrop.effects.vibrancy
+import com.kyant.backdrop.highlight.Highlight
+import com.kyant.backdrop.shadow.Shadow
+import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.ViewModelStoreOwner
+import androidx.savedstate.SavedStateRegistryOwner
+import androidx.compose.ui.platform.ViewTreeLifecycleOwner
+import androidx.compose.ui.platform.ViewTreeSavedStateRegistryOwner
 
 class OverlayService : Service() {
 
     private lateinit var windowManager: WindowManager
-    private var overlayView: View? = null
+    private var composeView: ComposeView? = null
     private lateinit var audioManager: AudioManager
 
-    // iOS 17 palette
-    private val iosBlue   = Color.parseColor("#0A84FF")
-    private val iosGrey   = Color.parseColor("#7C7C80")
-    private val iosPanel  = Color.parseColor("#E61C1C1E")
-    private val iosTile   = Color.parseColor("#2E2E30")
-    private val iosScrim  = Color.parseColor("#99000000")
-    private val iosText   = Color.WHITE
-    private val iosSubtle = Color.parseColor("#B0B0B5")
-
-    private var wifiOn = true
-    private var btOn = true
-    private var airplaneOn = false
-    private var hotspotOn = false
-    private var focusModeOn = false
-    private var rotationLockOn = false
+    private val iosBlue = ComposeColor(0xFF0A84FF)
+    private val iosGrey = ComposeColor(0xFF7C7C80)
+    private val iosTile = ComposeColor(0xFF2E2E30)
+    private val iosText = ComposeColor.White
+    private val iosSubtle = ComposeColor(0xFFB0B0B5)
 
     override fun onCreate() {
         super.onCreate()
@@ -55,385 +71,17 @@ class OverlayService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (overlayView == null) showOverlay()
+        if (composeView == null) showOverlay()
         return START_STICKY
     }
 
-    // ---------- drawing helpers ----------
-
-    private fun dp(v: Int): Int = TypedValue.applyDimension(
-        TypedValue.COMPLEX_UNIT_DIP, v.toFloat(), resources.displayMetrics
-    ).toInt()
-
-    private fun rounded(color: Int, radiusDp: Int): GradientDrawable =
-        GradientDrawable().apply {
-            shape = GradientDrawable.RECTANGLE
-            setColor(color)
-            cornerRadius = dp(radiusDp).toFloat()
-        }
-
-    private fun circle(color: Int): GradientDrawable =
-        GradientDrawable().apply {
-            shape = GradientDrawable.OVAL
-            setColor(color)
-        }
-
-    private fun focusRect(radiusDp: Int): GradientDrawable =
-        GradientDrawable().apply {
-            shape = GradientDrawable.RECTANGLE
-            setColor(Color.TRANSPARENT)
-            cornerRadius = dp(radiusDp).toFloat()
-            setStroke(dp(3), Color.WHITE)
-        }
-
-    private fun focusCircle(): GradientDrawable =
-        GradientDrawable().apply {
-            shape = GradientDrawable.OVAL
-            setColor(Color.TRANSPARENT)
-            setStroke(dp(3), Color.WHITE)
-        }
-
-    private fun layered(vararg d: android.graphics.drawable.Drawable) = LayerDrawable(d)
-
-    private fun text(s: String, sp: Float, color: Int = iosText, bold: Boolean = false): TextView =
-        TextView(this).apply {
-            text = s
-            textSize = sp
-            setTextColor(color)
-            gravity = Gravity.CENTER
-            if (bold) setTypeface(null, Typeface.BOLD)
-        }
-
-    // ---------- widgets ----------
-
-    private fun buildCircleToggle(
-        sizeDp: Int,
-        icon: String,
-        isOn: () -> Boolean,
-        toggle: () -> Unit
-    ): FrameLayout {
-        val tile = FrameLayout(this)
-        val lp = LinearLayout.LayoutParams(dp(sizeDp), dp(sizeDp))
-        lp.setMargins(dp(4), dp(4), dp(4), dp(4))
-        tile.layoutParams = lp
-        tile.isFocusable = true
-        tile.isFocusableInTouchMode = true
-        tile.setOnClickListener { toggle() }
-
-        val iconView = text(icon, 26f)
-        tile.addView(iconView, FrameLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT,
-            ViewGroup.LayoutParams.MATCH_PARENT
-        ))
-
-        fun paint(focused: Boolean) {
-            val bg = circle(if (isOn()) iosBlue else iosGrey)
-            tile.background = if (focused) layered(bg, focusCircle()) else bg
-        }
-        paint(false)
-        tile.onFocusChangeListener = View.OnFocusChangeListener { _, hasFocus -> paint(hasFocus) }
-        return tile
-    }
-
-    private fun buildConnectivityWidget(): LinearLayout {
-        val grid = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(8), dp(8), dp(8), dp(8))
-            background = rounded(iosTile, 32)
-        }
-        val row1 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        val row2 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-
-        val wifi = buildCircleToggle(88, "⏶", { wifiOn }) {
-            wifiOn = !wifiOn
-            try { startActivity(Intent(Settings.Panel.ACTION_INTERNET_CONNECTIVITY)
-                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) } catch (_: Exception) {}
-        }
-        val bt = buildCircleToggle(88, "ᛒ", { btOn }) { btOn = !btOn }
-        val air = buildCircleToggle(88, "✈", { airplaneOn }) {
-            airplaneOn = !airplaneOn
-            try { startActivity(Intent(Settings.ACTION_AIRPLANE_MODE_SETTINGS)
-                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) } catch (_: Exception) {}
-        }
-        val hotspot = buildCircleToggle(88, "◉", { hotspotOn }) { hotspotOn = !hotspotOn }
-
-        row1.addView(wifi); row1.addView(bt)
-        row2.addView(air); row2.addView(hotspot)
-        grid.addView(row1); grid.addView(row2)
-
-        grid.layoutParams = LinearLayout.LayoutParams(dp(200), dp(200)).apply { marginEnd = dp(14) }
-        return grid
-    }
-
-    private fun buildMusicWidget(): LinearLayout {
-        val card = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(18), dp(18), dp(18), dp(18))
-            background = rounded(iosTile, 32)
-        }
-        card.layoutParams = LinearLayout.LayoutParams(0, dp(200), 1f)
-
-        // Album art placeholder
-        val art = TextView(this).apply {
-            text = "♪"
-            textSize = 48f
-            setTextColor(Color.WHITE)
-            gravity = Gravity.CENTER
-            background = rounded(Color.parseColor("#3A3A3C"), 18)
-        }
-        val artLp = LinearLayout.LayoutParams(dp(150), dp(150))
-        artLp.marginEnd = dp(18)
-        card.addView(art, artLp)
-
-        // Track info
-        val info = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER_VERTICAL
-        }
-        val title = text("Not Playing", 22f, bold = true).apply { gravity = Gravity.START }
-        val artist = text("—", 16f, iosSubtle).apply { gravity = Gravity.START }
-        info.addView(title)
-        info.addView(artist)
-        card.addView(info, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-
-        // Transport controls
-        val prev = buildCircleToggle(64, "⏮", { false }) {}
-        val play = buildCircleToggle(80, "▶", { false }) {}
-        val next = buildCircleToggle(64, "⏭", { false }) {}
-        card.addView(prev); card.addView(play); card.addView(next)
-
-        return card
-    }
-
-    private fun buildSlider(
-        label: String,
-        glyph: String,
-        initialPct: Int,
-        onChange: (Int) -> Unit
-    ): FrameLayout {
-        var pct = initialPct.coerceIn(0, 100)
-        val heightDp = 300
-
-        val container = FrameLayout(this).apply {
-            background = rounded(iosTile, 44)
-            isFocusable = true
-            isFocusableInTouchMode = true
-        }
-        container.layoutParams = LinearLayout.LayoutParams(dp(96), dp(heightDp))
-            .apply { marginEnd = dp(14) }
-
-        // Fill from bottom
-        val fill = View(this)
-        container.addView(fill)
-
-        // Glyph at top
-        val glyphView = text(glyph, 28f)
-        container.addView(glyphView, FrameLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, dp(70)
-        ).apply { gravity = Gravity.TOP })
-
-        fun redraw(focused: Boolean) {
-            val h = (heightDp * pct / 100).coerceAtLeast(2)
-            val lp = FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(h)
-            ).apply { gravity = Gravity.BOTTOM }
-            fill.layoutParams = lp
-            fill.background = rounded(Color.WHITE, 44)
-            val base = rounded(iosTile, 44)
-            container.background = if (focused) layered(base, focusRect(44)) else base
-        }
-        redraw(false)
-        container.onFocusChangeListener = View.OnFocusChangeListener { _, f -> redraw(f) }
-
-        container.setOnKeyListener { _, code, ev ->
-            if (ev.action != KeyEvent.ACTION_DOWN) return@setOnKeyListener false
-            when (code) {
-                KeyEvent.KEYCODE_DPAD_UP -> { pct = (pct + 10).coerceAtMost(100); redraw(true); onChange(pct); true }
-                KeyEvent.KEYCODE_DPAD_DOWN -> { pct = (pct - 10).coerceAtLeast(0); redraw(true); onChange(pct); true }
-                else -> false
-            }
-        }
-
-        // small caption below glyph is skipped intentionally (clean look)
-
-        return container
-    }
-
-    private fun buildSquareToggle(
-        sizeDp: Int,
-        glyph: String,
-        caption: String,
-        isOn: () -> Boolean,
-        toggle: () -> Unit
-    ): LinearLayout {
-        val wrap = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER
-            isFocusable = true
-            isFocusableInTouchMode = true
-            setOnClickListener { toggle() }
-        }
-        val tile = FrameLayout(this).apply {
-            isFocusable = false
-            layoutParams = LinearLayout.LayoutParams(dp(sizeDp), dp(sizeDp))
-        }
-        val glyphView = text(glyph, 30f)
-        tile.addView(glyphView, FrameLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT,
-            ViewGroup.LayoutParams.MATCH_PARENT
-        ))
-        val capView = text(caption, 13f, iosSubtle).apply {
-            setPadding(0, dp(6), 0, 0)
-        }
-
-        fun paint(focused: Boolean) {
-            val bg = rounded(if (isOn()) iosBlue else iosGrey, 22)
-            tile.background = if (focused) layered(bg, focusRect(22)) else bg
-        }
-        paint(false)
-        wrap.addView(tile)
-        wrap.addView(capView)
-        wrap.onFocusChangeListener = View.OnFocusChangeListener { _, f -> paint(f) }
-        return wrap
-    }
-
-    private fun buildScreenMirroring(): LinearLayout {
-        val bar = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(18), dp(14), dp(18), dp(14))
-            background = rounded(iosTile, 22)
-            isFocusable = true
-            isFocusableInTouchMode = true
-            setOnClickListener {
-                try {
-                    startActivity(Intent(Settings.ACTION_CAST_SETTINGS)
-                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-                } catch (_: Exception) {}
-            }
-        }
-        bar.addView(text("⇄", 22f))
-        bar.addView(text("  Screen Mirroring", 16f))
-        bar.onFocusChangeListener = View.OnFocusChangeListener { v, f ->
-            v.background = if (f) layered(rounded(iosTile, 22), focusRect(22))
-                           else rounded(iosTile, 22)
-        }
-        return bar
-    }
-
-    private fun buildCircleButton(glyph: String, caption: String, onClick: () -> Unit): LinearLayout {
-        val wrap = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER
-            isFocusable = true
-            isFocusableInTouchMode = true
-            setOnClickListener { onClick() }
-        }
-        val size = 100
-        val holder = FrameLayout(this).apply {
-            layoutParams = LinearLayout.LayoutParams(dp(size), dp(size))
-        }
-        val g = text(glyph, 34f)
-        holder.addView(g, FrameLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT,
-            ViewGroup.LayoutParams.MATCH_PARENT
-        ))
-        val cap = text(caption, 12f, iosSubtle).apply { setPadding(0, dp(6), 0, 0) }
-
-        fun paint(f: Boolean) {
-            val bg = circle(iosTile)
-            holder.background = if (f) layered(bg, focusCircle()) else bg
-        }
-        paint(false)
-        wrap.addView(holder)
-        wrap.addView(cap)
-        wrap.onFocusChangeListener = View.OnFocusChangeListener { _, f -> paint(f) }
-        wrap.layoutParams = LinearLayout.LayoutParams(dp(120), ViewGroup.LayoutParams.WRAP_CONTENT)
-            .apply { marginStart = dp(10); marginEnd = dp(10) }
-        return wrap
-    }
-
-    // ---------- overlay ----------
-
     private fun showOverlay() {
-        val root = FrameLayout(this).apply {
-            setBackgroundColor(iosScrim)
-            isFocusable = true
-            isFocusableInTouchMode = true
-            requestFocus()
-            setOnKeyListener { _, keyCode, event ->
-                if (event.action == KeyEvent.ACTION_DOWN && keyCode == KeyEvent.KEYCODE_BACK) {
-                    hideOverlay(); true
-                } else false
-            }
+        val view = ComposeView(this).apply {
+            setContent { ControlCenterOverlay() }
+            setViewTreeLifecycleOwner(this@OverlayService as LifecycleOwner)
+            setViewTreeViewModelStoreOwner(this@OverlayService as ViewModelStoreOwner)
+            setViewTreeSavedStateRegistryOwner(this@OverlayService as SavedStateRegistryOwner)
         }
-
-        val panel = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(22), dp(22), dp(22), dp(22))
-            background = rounded(iosPanel, 48)
-        }
-
-        // Row 1: connectivity + music
-        val row1 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        row1.addView(buildConnectivityWidget())
-        row1.addView(buildMusicWidget())
-        panel.addView(row1)
-
-        // Row 2: sliders + right column
-        val row2 = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            setPadding(0, dp(14), 0, 0)
-        }
-        val currentVol = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
-        val maxVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
-        val volPct = (currentVol * 100 / maxVol)
-
-        row2.addView(buildSlider("Brightness", "☀", 70) { /* Brightness: no API without WRITE_SETTINGS */ })
-        row2.addView(buildSlider("Volume", "🔊", volPct) { pct ->
-            val target = (pct * maxVol / 100).coerceIn(0, maxVol)
-            audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, target, 0)
-        })
-
-        val rightCol = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-        }
-        val toggleRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        val rotLock = buildSquareToggle(96, "🔒", "Rotation Lock", { rotationLockOn }) { rotationLockOn = !rotationLockOn }
-        val focusTile = buildSquareToggle(96, "🌙", "Focus", { focusModeOn }) { focusModeOn = !focusModeOn }
-        val rotWrap = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; addView(rotLock) }
-        rotWrap.layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-        val focusWrap = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; addView(focusTile) }
-        focusWrap.layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-        toggleRow.addView(rotWrap); toggleRow.addView(focusWrap)
-        rightCol.addView(toggleRow)
-
-        val mirror = buildScreenMirroring()
-        val mirrorLp = LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
-        ).apply { topMargin = dp(14) }
-        rightCol.addView(mirror, mirrorLp)
-        row2.addView(rightCol, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        panel.addView(row2)
-
-        // Row 3: 4 circular buttons
-        val row3 = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER
-            setPadding(0, dp(18), 0, 0)
-        }
-        row3.addView(buildCircleButton("🔦", "Flashlight") {})
-        row3.addView(buildCircleButton("⏱", "Timer") {})
-        row3.addView(buildCircleButton("🧮", "Calculator") {})
-        row3.addView(buildCircleButton("📷", "Camera") {})
-        panel.addView(row3)
-
-        root.addView(panel, FrameLayout.LayoutParams(
-            ViewGroup.LayoutParams.WRAP_CONTENT,
-            ViewGroup.LayoutParams.WRAP_CONTENT,
-            Gravity.CENTER
-        ))
 
         val params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.MATCH_PARENT,
@@ -445,31 +93,395 @@ class OverlayService : Service() {
             android.graphics.PixelFormat.TRANSLUCENT
         ).apply { gravity = Gravity.CENTER }
 
-        windowManager.addView(root, params)
-        overlayView = root
+        windowManager.addView(view, params)
+        composeView = view
+    }
 
-        // grab focus on first focusable child so D-pad works immediately
-        root.post {
-            val first = findFirstFocusable(panel)
-            first?.requestFocus()
+    @Composable
+    private fun ControlCenterOverlay() {
+        // The backdrop captures whatever is behind the overlay.
+        // On Android 13+, this uses RenderEffect for real blur.
+        // On older devices, it falls back to a translucent scrim.
+        val backdrop = rememberLayerBackdrop()
+
+        var wifiOn by remember { mutableStateOf(true) }
+        var btOn by remember { mutableStateOf(true) }
+        var airplaneOn by remember { mutableStateOf(false) }
+        var hotspotOn by remember { mutableStateOf(false) }
+        var focusModeOn by remember { mutableStateOf(false) }
+        var rotationLockOn by remember { mutableStateOf(false) }
+
+        val maxVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
+        var volumePct by remember {
+            mutableIntStateOf(audioManager.getStreamVolume(AudioManager.STREAM_MUSIC) * 100 / maxVol)
+        }
+
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(ComposeColor(0x99000000))
+                .layerBackdrop(backdrop)
+                .focusable()
+                .onKeyEvent { event ->
+                    if (event.type == KeyEventType.KeyDown && event.key == Key.Back) {
+                        hideOverlay(); true
+                    } else false
+                },
+            contentAlignment = Alignment.Center
+        ) {
+            Column(
+                modifier = Modifier
+                    .drawBackdrop(
+                        backdrop = backdrop,
+                        shape = { RoundedCornerShape(48.dp) },
+                        effects = {
+                            vibrancy()
+                            blur(30.dp.toPx())
+                        },
+                        highlight = { Highlight.Default },
+                        shadow = { Shadow.Default },
+                        onDrawSurface = { drawRect(ComposeColor(0xE61C1C1E)) }
+                    )
+                    .padding(22.dp)
+            ) {
+                // ROW 1: Connectivity + Music
+                Row {
+                    ConnectivityWidget(
+                        wifiOn = wifiOn, btOn = btOn,
+                        airplaneOn = airplaneOn, hotspotOn = hotspotOn,
+                        onWifi = { wifiOn = !wifiOn; openWifiPanel() },
+                        onBt = { btOn = !btOn },
+                        onAirplane = { airplaneOn = !airplaneOn; openAirplane() },
+                        onHotspot = { hotspotOn = !hotspotOn }
+                    )
+                    Spacer(Modifier.width(14.dp))
+                    MusicWidget()
+                }
+
+                Spacer(Modifier.height(14.dp))
+
+                // ROW 2: Sliders + right column
+                Row {
+                    GlassSlider(
+                        label = "Brightness", glyph = "☀",
+                        initialPct = 70,
+                        onChange = { /* no-op on TV */ }
+                    )
+                    Spacer(Modifier.width(14.dp))
+                    GlassSlider(
+                        label = "Volume", glyph = "🔊",
+                        initialPct = volumePct,
+                        onChange = { pct ->
+                            volumePct = pct
+                            val target = (pct * maxVol / 100).coerceIn(0, maxVol)
+                            audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, target, 0)
+                        }
+                    )
+                    Spacer(Modifier.width(14.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Row {
+                            SquareToggle(
+                                glyph = "🔒", caption = "Rotation Lock",
+                                isOn = { rotationLockOn },
+                                toggle = { rotationLockOn = !rotationLockOn },
+                                modifier = Modifier.weight(1f)
+                            )
+                            SquareToggle(
+                                glyph = "🌙", caption = "Focus",
+                                isOn = { focusModeOn },
+                                toggle = { focusModeOn = !focusModeOn },
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                        Spacer(Modifier.height(14.dp))
+                        ScreenMirroringBar(onClick = { openCastSettings() })
+                    }
+                }
+
+                Spacer(Modifier.height(18.dp))
+
+                // ROW 3: Circular utility buttons
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.Center
+                ) {
+                    CircleButton("🔦", "Flashlight") {}
+                    CircleButton("⏱", "Timer") {}
+                    CircleButton("🧮", "Calculator") {}
+                    CircleButton("📷", "Camera") {}
+                }
+            }
         }
     }
 
-    private fun findFirstFocusable(v: View): View? {
-        if (v.isFocusable && v !is android.view.ViewGroup) return v
-        if (v is android.view.ViewGroup) {
-            for (i in 0 until v.childCount) {
-                val f = findFirstFocusable(v.getChildAt(i))
-                if (f != null) return f
+    // ---------- Compose widgets using drawBackdrop ----------
+
+    @Composable
+    private fun ConnectivityWidget(
+        wifiOn: Boolean, btOn: Boolean, airplaneOn: Boolean, hotspotOn: Boolean,
+        onWifi: () -> Unit, onBt: () -> Unit, onAirplane: () -> Unit, onHotspot: () -> Unit
+    ) {
+        val backdrop = rememberLayerBackdrop()
+        Column(
+            modifier = Modifier
+                .size(200.dp)
+                .drawBackdrop(
+                    backdrop = backdrop,
+                    shape = { RoundedCornerShape(32.dp) },
+                    effects = { blur(20.dp.toPx()) },
+                    onDrawSurface = { drawRect(ComposeColor(0x662E2E30)) }
+                )
+                .padding(8.dp)
+        ) {
+            Row {
+                GlassCircleToggle(88.dp, "⏶", wifiOn, onWifi)
+                GlassCircleToggle(88.dp, "ᛒ", btOn, onBt)
+            }
+            Row {
+                GlassCircleToggle(88.dp, "✈", airplaneOn, onAirplane)
+                GlassCircleToggle(88.dp, "◉", hotspotOn, onHotspot)
             }
         }
-        return null
+    }
+
+    @Composable
+    private fun MusicWidget() {
+        val backdrop = rememberLayerBackdrop()
+        Row(
+            modifier = Modifier
+                .height(200.dp)
+                .drawBackdrop(
+                    backdrop = backdrop,
+                    shape = { RoundedCornerShape(32.dp) },
+                    effects = { blur(20.dp.toPx()); vibrancy() },
+                    onDrawSurface = { drawRect(ComposeColor(0x662E2E30)) }
+                )
+                .padding(18.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(150.dp)
+                    .clip(RoundedCornerShape(18.dp))
+                    .background(ComposeColor(0xFF3A3A3C)),
+                contentAlignment = Alignment.Center
+            ) {
+                Text("♪", fontSize = 48.sp, color = iosText)
+            }
+            Spacer(Modifier.width(18.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text("Not Playing", fontSize = 22.sp, fontWeight = FontWeight.Bold, color = iosText)
+                Text("—", fontSize = 16.sp, color = iosSubtle)
+            }
+            GlassCircleToggle(64.dp, "⏮", false) {}
+            GlassCircleToggle(80.dp, "▶", false) {}
+            GlassCircleToggle(64.dp, "⏭", false) {}
+        }
+    }
+
+    @Composable
+    private fun GlassCircleToggle(
+        size: androidx.compose.ui.unit.Dp,
+        glyph: String,
+        isOn: Boolean,
+        onClick: () -> Unit
+    ) {
+        var focused by remember { mutableStateOf(false) }
+        Box(
+            modifier = Modifier
+                .size(size)
+                .padding(4.dp)
+                .clip(CircleShape)
+                .background(if (isOn) iosBlue else iosGrey)
+                .onFocusChanged { focused = it.isFocused }
+                .focusable()
+                .onKeyEvent { event ->
+                    if (event.type == KeyEventType.KeyDown &&
+                        (event.key == Key.Enter || event.key == Key.DirectionCenter)) {
+                        onClick(); true
+                    } else false
+                },
+            contentAlignment = Alignment.Center
+        ) {
+            Text(glyph, fontSize = (size.value * 0.32f).sp, color = iosText)
+            if (focused) {
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .clip(CircleShape)
+                        .background(ComposeColor.Transparent)
+                )
+            }
+        }
+    }
+
+    @Composable
+    private fun GlassSlider(
+        label: String,
+        glyph: String,
+        initialPct: Int,
+        onChange: (Int) -> Unit
+    ) {
+        var pct by remember { mutableIntStateOf(initialPct.coerceIn(0, 100)) }
+        val backdrop = rememberLayerBackdrop()
+        var focused by remember { mutableStateOf(false) }
+
+        Box(
+            modifier = Modifier
+                .width(96.dp)
+                .height(300.dp)
+                .drawBackdrop(
+                    backdrop = backdrop,
+                    shape = { RoundedCornerShape(44.dp) },
+                    effects = { blur(24.dp.toPx()); vibrancy() },
+                    onDrawSurface = { drawRect(ComposeColor(0x662E2E30)) }
+                )
+                .focusable()
+                .onFocusChanged { focused = it.isFocused }
+                .onKeyEvent { event ->
+                    when {
+                        event.type != KeyEventType.KeyDown -> false
+                        event.key == Key.DirectionUp -> {
+                            pct = (pct + 10).coerceAtMost(100); onChange(pct); true
+                        }
+                        event.key == Key.DirectionDown -> {
+                            pct = (pct - 10).coerceAtLeast(0); onChange(pct); true
+                        }
+                        else -> false
+                    }
+                }
+        ) {
+            // Fill from bottom
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .fillMaxHeight(pct / 100f)
+                    .clip(RoundedCornerShape(44.dp))
+                    .background(ComposeColor.White)
+            )
+            Text(
+                glyph, fontSize = 28.sp, color = iosText,
+                modifier = Modifier.align(Alignment.TopCenter).padding(top = 20.dp)
+            )
+        }
+    }
+
+    @Composable
+    private fun SquareToggle(
+        glyph: String, caption: String,
+        isOn: () -> Boolean, toggle: () -> Unit,
+        modifier: Modifier = Modifier
+    ) {
+        var focused by remember { mutableStateOf(false) }
+        Column(
+            modifier = modifier
+                .focusable()
+                .onFocusChanged { focused = it.isFocused }
+                .onKeyEvent { event ->
+                    if (event.type == KeyEventType.KeyDown &&
+                        (event.key == Key.Enter || event.key == Key.DirectionCenter)) {
+                        toggle(); true
+                    } else false
+                },
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(96.dp)
+                    .clip(RoundedCornerShape(22.dp))
+                    .background(if (isOn()) iosBlue else iosGrey),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(glyph, fontSize = 30.sp, color = iosText)
+            }
+            Spacer(Modifier.height(6.dp))
+            Text(caption, fontSize = 13.sp, color = iosSubtle)
+        }
+    }
+
+    @Composable
+    private fun ScreenMirroringBar(onClick: () -> Unit) {
+        var focused by remember { mutableStateOf(false) }
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(22.dp))
+                .background(iosTile)
+                .focusable()
+                .onFocusChanged { focused = it.isFocused }
+                .onKeyEvent { event ->
+                    if (event.type == KeyEventType.KeyDown &&
+                        (event.key == Key.Enter || event.key == Key.DirectionCenter)) {
+                        onClick(); true
+                    } else false
+                }
+                .padding(18.dp, 14.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text("⇄", fontSize = 22.sp, color = iosText)
+            Spacer(Modifier.width(8.dp))
+            Text("Screen Mirroring", fontSize = 16.sp, color = iosText)
+        }
+    }
+
+    @Composable
+    private fun CircleButton(glyph: String, caption: String, onClick: () -> Unit) {
+        var focused by remember { mutableStateOf(false) }
+        Column(
+            modifier = Modifier
+                .padding(10.dp)
+                .focusable()
+                .onFocusChanged { focused = it.isFocused }
+                .onKeyEvent { event ->
+                    if (event.type == KeyEventType.KeyDown &&
+                        (event.key == Key.Enter || event.key == Key.DirectionCenter)) {
+                        onClick(); true
+                    } else false
+                },
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(100.dp)
+                    .clip(CircleShape)
+                    .background(iosTile),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(glyph, fontSize = 34.sp, color = iosText)
+            }
+            Spacer(Modifier.height(6.dp))
+            Text(caption, fontSize = 12.sp, color = iosSubtle)
+        }
+    }
+
+    // ---------- system helpers ----------
+
+    private fun openWifiPanel() {
+        try {
+            startActivity(Intent(Settings.Panel.ACTION_INTERNET_CONNECTIVITY)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        } catch (_: Exception) {}
+    }
+
+    private fun openAirplane() {
+        try {
+            startActivity(Intent(Settings.ACTION_AIRPLANE_MODE_SETTINGS)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        } catch (_: Exception) {}
+    }
+
+    private fun openCastSettings() {
+        try {
+            startActivity(Intent(Settings.ACTION_CAST_SETTINGS)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        } catch (_: Exception) {}
     }
 
     private fun hideOverlay() {
-        overlayView?.let {
+        composeView?.let {
             try { windowManager.removeView(it) } catch (_: Exception) {}
-            overlayView = null
+            composeView = null
         }
         stopSelf()
     }
