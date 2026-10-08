@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">AppleTV Overlay</string>
+    <string name="accessibility_description">Allows the overlay to send Home and Back commands.</string>
+</resources>
